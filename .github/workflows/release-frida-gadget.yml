@@ -1,0 +1,109 @@
+name: Release Frida Gadget
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run weekly on Monday at 00:00 UTC to check for new Frida releases
+    - cron: '0 0 * * 1'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Get latest Frida version
+        id: frida-version
+        run: |
+          FRIDA_VERSION=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r .tag_name)
+          echo "version=$FRIDA_VERSION" >> $GITHUB_OUTPUT
+          echo "Latest Frida version: $FRIDA_VERSION"
+      
+      - name: Check if release already exists
+        id: check-release
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          if gh release view "$VERSION" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $VERSION already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release $VERSION does not exist"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      
+      - name: Download Frida gadgets
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          mkdir -p gadgets
+          
+          # Android architectures
+          ARCHS=("arm" "arm64" "x86" "x86_64")
+          
+          for ARCH in "${ARCHS[@]}"; do
+            echo "Downloading frida-gadget for android-${ARCH}..."
+            URL="https://github.com/frida/frida/releases/download/${VERSION}/frida-gadget-${VERSION}-android-${ARCH}.so.xz"
+            
+            # Download and extract
+            curl -L -o "gadgets/frida-gadget-${VERSION}-android-${ARCH}.so.xz" "$URL"
+            xz -d "gadgets/frida-gadget-${VERSION}-android-${ARCH}.so.xz"
+            
+            echo "Downloaded and extracted: frida-gadget-${VERSION}-android-${ARCH}.so"
+          done
+      
+      - name: Create zip archives
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          cd gadgets
+          
+          # Create individual zip files for each architecture
+          for SO_FILE in *.so; do
+            ARCH=$(echo "$SO_FILE" | sed -E "s/frida-gadget-${VERSION}-android-(.*)\.so/\1/")
+            ZIP_NAME="frida-gadget-${VERSION}-android-${ARCH}.zip"
+            zip "$ZIP_NAME" "$SO_FILE"
+            echo "Created: $ZIP_NAME"
+          done
+          
+          # Create a combined zip with all architectures
+          zip "frida-gadget-${VERSION}-android-all.zip" *.so
+          echo "Created: frida-gadget-${VERSION}-android-all.zip"
+          
+          ls -lh *.zip
+      
+      - name: Create GitHub Release
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          
+          gh release create "$VERSION" \
+            --title "Frida Gadget $VERSION for Android" \
+            --notes "Frida Gadget $VERSION for Android architectures (arm, arm64, x86, x86_64)
+            
+            ## Downloads
+            - **frida-gadget-$VERSION-android-all.zip** - All architectures in one package
+            - **frida-gadget-$VERSION-android-arm.zip** - ARM 32-bit
+            - **frida-gadget-$VERSION-android-arm64.zip** - ARM 64-bit
+            - **frida-gadget-$VERSION-android-x86.zip** - x86 32-bit
+            - **frida-gadget-$VERSION-android-x86_64.zip** - x86 64-bit
+            
+            Source: [Frida Release $VERSION](https://github.com/frida/frida/releases/tag/$VERSION)" \
+            gadgets/*.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+      
+      - name: Release created successfully
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          echo "✅ Successfully created release $VERSION with Frida gadgets"
+      
+      - name: Release already exists
+        if: steps.check-release.outputs.exists == 'true'
+        run: |
+          VERSION="${{ steps.frida-version.outputs.version }}"
+          echo "ℹ️ Release $VERSION already exists, skipping..."
